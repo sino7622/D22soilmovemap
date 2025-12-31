@@ -48,5 +48,21 @@ def download_excel():
 def download_kml():
     return send_file(KML_PATH, as_attachment=True, download_name="全台土資場分佈圖_latest.kml")
 
+import traceback
+
+@app.route("/api/update")
+def api_update():
+    global latest
+    try:
+        latest = update_all()
+        return jsonify(latest)
+    except Exception as e:
+        # 把錯誤回傳給前端、也方便你在 Render Logs 看到
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
 if __name__ == "__main__":
     app.run(debug=True)

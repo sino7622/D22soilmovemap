@@ -108,6 +108,11 @@ def update_all() -> dict:
     # 2) POST 拿資料
     r = session.post(url, headers=headers, data={"city": ""}, timeout=30, verify=False)
     r.raise_for_status()
+
+    ct = (r.headers.get("Content-Type") or "").lower()
+    if "application/json" not in ct:
+        raise RuntimeError(f"Non-JSON response, status={r.status_code}, content-type={ct}, head={r.text[:200]}")
+
     data = r.json()
 
     if not data:
