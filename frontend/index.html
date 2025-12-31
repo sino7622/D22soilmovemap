@@ -272,81 +272,15 @@
 
     <script>
         // =========================
-        // 0) Render API（改成你的）
+        // 0) 基本設定
         // =========================
-        const API_BASE = "https://d22-soilmovemap.onrender.com";
+        const SOILMOVE_LIST_URL = "https://www.soilmove.tw/soilmove/dumpsiteGisQueryList";
+        const SOILMOVE_REFERER = "https://www.soilmove.tw/soilmove/dumpsiteGisQuery";
 
-        // =========================
-        // 1) IndexedDB 快取（前端暫存）
-        // =========================
-        const DB_NAME = "soilmove_cache_db";
-        const DB_VER = 1;
-        const STORE = "cache";
+        // localStorage key
+        const LS_KEY = "soilmove_cache_v1";
 
-        function idbOpen() {
-            return new Promise((resolve, reject) => {
-                const req = indexedDB.open(DB_NAME, DB_VER);
-                req.onupgradeneeded = () => {
-                    const db = req.result;
-                    if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
-                };
-                req.onsuccess = () => resolve(req.result);
-                req.onerror = () => reject(req.error);
-            });
-        }
-
-        async function idbGet(key) {
-            const db = await idbOpen();
-            return new Promise((resolve, reject) => {
-                const tx = db.transaction(STORE, "readonly");
-                const st = tx.objectStore(STORE);
-                const req = st.get(key);
-                req.onsuccess = () => resolve(req.result ?? null);
-                req.onerror = () => reject(req.error);
-                tx.oncomplete = () => db.close();
-            });
-        }
-
-        async function idbSet(key, value) {
-            const db = await idbOpen();
-            return new Promise((resolve, reject) => {
-                const tx = db.transaction(STORE, "readwrite");
-                const st = tx.objectStore(STORE);
-                const req = st.put(value, key);
-                req.onsuccess = () => resolve(true);
-                req.onerror = () => reject(req.error);
-                tx.oncomplete = () => db.close();
-            });
-        }
-
-        // =========================
-        // 2) Proj4: EPSG:3826 (TWD97 TM2 zone 121)
-        // =========================
-        proj4.defs("EPSG:3826",
-            "+proj=tmerc +lat_0=0 +lon_0=121 +k=0.9999 +x_0=250000 +y_0=0 +ellps=GRS80 +units=m +no_defs"
-        );
-
-        function transformGeoJSON_3826_to_4326(geojson) {
-            function transformCoords(coords) {
-                if (typeof coords[0] === "number") {
-                    const [lng, lat] = proj4("EPSG:3826", "EPSG:4326", coords);
-                    return [lng, lat];
-                }
-                return coords.map(transformCoords);
-            }
-
-            if (!geojson || !geojson.features) return geojson;
-            geojson.features.forEach(f => {
-                if (f && f.geometry && f.geometry.coordinates) {
-                    f.geometry.coordinates = transformCoords(f.geometry.coordinates);
-                }
-            });
-            return geojson;
-        }
-
-        // =========================
-        // 3) UI 控制：info-card
-        // =========================
+        // 控制 UI
         function setInfoCardVisible(isVisible) {
             const el = document.getElementById("infoCard");
             if (!el) return;
@@ -366,163 +300,141 @@
             }
         }
 
-        // =========================
-        // 4) 地圖底圖 + 控制
-        // =========================
-        const baseOSM = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-            maxZoom: 19,
-            attribution: "&copy; OpenStreetMap"
-        });
-
-        const baseImagery = L.tileLayer(
-            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-            { maxZoom: 19, attribution: "Tiles &copy; Esri" }
-        );
-
-        const map = L.map("map", {
-            center: [23.7, 121],
-            zoom: 7,
-            layers: [baseOSM]
-        });
-
-        L.control.layers({ "一般地圖": baseOSM, "航照圖": baseImagery }, null, { position: "topright" }).addTo(map);
-
-        // 比例尺
-        L.control.scale({ position: "bottomleft", metric: true, imperial: false }).addTo(map);
-
-        // 指北針
-        const northArrow = L.control({ position: "topleft" });
-        northArrow.onAdd = function () {
-            return L.DomUtil.create("div", "north-arrow");
-        };
-        northArrow.addTo(map);
-
-        // =========================
-        // 5) 群聚圖層
-        // =========================
-        const cluster = L.markerClusterGroup({
-            maxClusterRadius: 60,
-            disableClusteringAtZoom: 11,
-            spiderfyOnMaxZoom: true,
-            showCoverageOnHover: false,
-            zoomToBoundsOnClick: true
-        });
-        map.addLayer(cluster);
-
-        // =========================
-        // 6) PIN icon（SVG dataURL）
-        // =========================
-        function makePinDataUrl(fillColor) {
-            const svg = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="26" height="41" viewBox="0 0 26 41">
-          <path d="M13 0C6.37 0 1 5.37 1 12c0 9 12 29 12 29s12-20 12-29C25 5.37 19.63 0 13 0z"
-                fill="${fillColor}" stroke="rgba(0,0,0,0.35)" stroke-width="1"/>
-          <circle cx="13" cy="12" r="5" fill="rgba(255,255,255,0.95)"/>
-        </svg>
-      `.trim();
-            return "data:image/svg+xml;charset=UTF-8," + encodeURIComponent(svg);
+        function nowTaipeiString() {
+            // 不靠後端，直接用瀏覽器時間
+            const d = new Date();
+            const pad = (n) => String(n).padStart(2, "0");
+            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
         }
 
-        function makePinIcon(fillColor) {
-            return L.icon({
-                iconUrl: makePinDataUrl(fillColor),
-                iconSize: [26, 41],
-                iconAnchor: [13, 41],
-                popupAnchor: [0, -36]
+        // =========================
+        // 1) 座標正規化（支援：經緯度 / 反轉 / TWD97(TM2) 常見公尺座標）
+        // =========================
+        // 前端要做 TWD97 → WGS84 需要 proj4
+        // 你已經有引入：https://unpkg.com/proj4@2.9.2/dist/proj4.js
+        // 定義 EPSG:3826（TWD97 / TM2(121)）
+        if (typeof proj4 !== "undefined") {
+            proj4.defs("EPSG:3826", "+proj=tmerc +lat_0=0 +lon_0=121 +k=0.9999 +x_0=250000 +y_0=0 +ellps=GRS80 +units=m +no_defs");
+        }
+
+        function looksLikeLngLat(lng, lat) {
+            return (lng > 118 && lng < 125) && (lat > 20 && lat < 26.5);
+        }
+
+        function looksLikeTWD97(x, y) {
+            return (x >= 100000 && x <= 400000) && (y >= 2000000 && y <= 3200000);
+        }
+
+        function normalizeCoords(obj) {
+            // soilmove 原始欄位：x, y（可能字串）
+            const v1 = parseFloat(obj.x || 0);
+            const v2 = parseFloat(obj.y || 0);
+
+            // A) 已是經緯度（x=lng, y=lat）
+            if (looksLikeLngLat(v1, v2)) return { lng: v1, lat: v2, coord_status: "原始經緯度" };
+
+            // B) 反轉後是經緯度（x=lat, y=lng）
+            if (looksLikeLngLat(v2, v1)) return { lng: v2, lat: v1, coord_status: "已修正(X/Y反轉→經緯度)" };
+
+            // C) TWD97(TM2 3826) → WGS84
+            if (typeof proj4 !== "undefined" && looksLikeTWD97(v1, v2)) {
+                const [lng, lat] = proj4("EPSG:3826", "EPSG:4326", [v1, v2]);
+                if (looksLikeLngLat(lng, lat)) return { lng, lat, coord_status: "TWD97(TM2 3826)→WGS84 轉換" };
+            }
+
+            // D) 反轉後是 TWD97
+            if (typeof proj4 !== "undefined" && looksLikeTWD97(v2, v1)) {
+                const [lng, lat] = proj4("EPSG:3826", "EPSG:4326", [v2, v1]);
+                if (looksLikeLngLat(lng, lat)) return { lng, lat, coord_status: "已修正(X/Y反轉)+TWD97→WGS84 轉換" };
+            }
+
+            return { lng: 0, lat: 0, coord_status: "座標異常/未能辨識座標系統" };
+        }
+
+        // =========================
+        // 2) 轉成前端 render() 需要的資料結構（維持你原本欄位）
+        // =========================
+        function shapeForMap(rawList) {
+            const out = [];
+            (rawList || []).forEach(d => {
+                const { lng, lat, coord_status } = normalizeCoords(d);
+
+                if (lng > 0 && lat > 0) {
+                    out.push({
+                        dumpname: d.dumpname || "未命名",
+                        city: d.city || "",
+                        typename: d.typename || "",
+                        controlId: d.controlId || "",
+                        applydate: d.applydate || "",
+                        remain: d.remain || "",
+                        maxbury: d.maxbury || "",
+                        area: d.area || "",
+                        lng, lat,
+                        coord_status
+                    });
+                }
             });
+            return out;
         }
 
-        const blueIcon = makePinIcon("#2563eb");
-        const grayIcon = makePinIcon("#6b7280");
-
         // =========================
-        // 7) 圖例（右下角）
+        // 3) localStorage：讀/寫快取
         // =========================
-        const legend = L.control({ position: "bottomright" });
-        legend.onAdd = function () {
-            const div = L.DomUtil.create("div", "map-legend");
-            div.innerHTML = `
-        <div style="
-          background:#fff;
-          padding:10px 12px;
-          border-radius:8px;
-          box-shadow:0 2px 6px rgba(0,0,0,0.2);
-          font-size:13px;
-          line-height:1.6;
-        ">
-          <div style="font-weight:600; margin-bottom:6px;">圖例</div>
-
-          <div style="display:flex; align-items:center; gap:8px;">
-            <span style="display:inline-flex; width:14px; height:14px; border-radius:50%; background:#2563eb;"></span>
-            <span>正常營運（藍色）</span>
-          </div>
-
-          <div style="display:flex; align-items:center; gap:8px; margin-top:4px;">
-            <span style="display:inline-flex; width:14px; height:14px; border-radius:50%; background:#6b7280;"></span>
-            <span>暫停 / 停止（深灰）</span>
-          </div>
-        </div>
-      `;
-            return div;
-        };
-        legend.addTo(map);
-
-        // =========================
-        // 8) 資料渲染 + 暫停站點控制
-        // =========================
-        let showSuspended = true;
-        let lastData = [];
-
-        function isSuspended(name) {
-            if (!name) return false;
-            return name.includes("暫停") || name.includes("停止") || name.includes("停場") || name.includes("終止");
+        function saveCache(payload) {
+            try {
+                localStorage.setItem(LS_KEY, JSON.stringify(payload));
+            } catch (e) {
+                console.warn("localStorage 寫入失敗：", e);
+            }
         }
 
-        // ✅ Popup 欄位維持原版完整版
-        function render(data) {
-            cluster.clearLayers();
-            lastData = Array.isArray(data) ? data : [];
+        function loadCache() {
+            try {
+                const s = localStorage.getItem(LS_KEY);
+                if (!s) return null;
+                return JSON.parse(s);
+            } catch (e) {
+                console.warn("localStorage 讀取失敗：", e);
+                return null;
+            }
+        }
 
-            lastData.forEach(d => {
-                const suspended = isSuspended(d.dumpname);
+        // =========================
+        // 4) 真的去抓 soilmove（前端 fetch）
+        // =========================
+        async function fetchSoilmove() {
+            // soilmove 這支通常需要 POST city=''，且有 Referer / X-Requested-With
+            // ⚠️ 注意：瀏覽器會限制你自訂 Referer，這是正常的
+            // 我們盡量帶 X-Requested-With，並用 form-urlencoded
+            const body = new URLSearchParams({ city: "" });
 
-                // 若關閉顯示暫停 → 直接跳過
-                if (!showSuspended && suspended) return;
-
-                const icon = suspended ? grayIcon : blueIcon;
-
-                const popupHtml = `
-          <strong>${d.dumpname || "未命名"}</strong><br/>
-          <b>縣市：</b> ${d.city || ""}<br/>
-          <b>類型：</b> ${d.typename || ""}<br/>
-          <b>流向編號：</b> ${d.controlId || ""}<br/>
-          <b>申報日期：</b> ${d.applydate || ""}<br/>
-          <hr/>
-          <b>B1~B7 剩餘填埋量：</b> ${d.remain || ""} ㎥<br/>
-          <b>B1~B7 核准填埋量：</b> ${d.maxbury || ""} ㎥<br/>
-          <b>面積：</b> ${d.area || ""} 公頃<br/>
-          <hr/>
-          <b>經度：</b> ${d.lng}<br/>
-          <b>緯度：</b> ${d.lat}<br/>
-          ${suspended ? '<hr/><b style="color:#6b7280;">狀態：暫停中</b>' : ""}
-        `;
-
-                const m = L.marker([d.lat, d.lng], { icon }).bindPopup(popupHtml);
-                cluster.addLayer(m);
+            const resp = await fetch(SOILMOVE_LIST_URL, {
+                method: "POST",
+                mode: "cors", // 若對方不開 CORS，會直接被瀏覽器擋（不是你的錯）
+                headers: {
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "X-Requested-With": "XMLHttpRequest"
+                },
+                body
             });
-        }
 
-        function toggleSuspended() {
-            showSuspended = !showSuspended;
+            if (!resp.ok) {
+                throw new Error(`soilmove fetch failed: HTTP ${resp.status}`);
+            }
 
-            const btn = document.getElementById("btnToggleSuspended");
-            if (btn) btn.textContent = showSuspended ? "🚫 隱藏暫停站點" : "👁 顯示暫停站點";
+            // 期待 JSON
+            const ct = (resp.headers.get("content-type") || "").toLowerCase();
+            if (!ct.includes("application/json")) {
+                const text = await resp.text();
+                throw new Error(`soilmove non-json: ${ct} head=${text.slice(0, 120)}`);
+            }
 
-            render(lastData);
+            return await resp.json();
         }
 
         // =========================
-        // 9) 更新：按一下抓最新 + 存 IndexedDB
+        // 5) Update：按一下就抓最新 + 存快取 + render
         // =========================
         async function update() {
             const btn = document.getElementById("btnUpdate");
@@ -530,148 +442,76 @@
             setInfoCardVisible(false);
 
             try {
-                // Render 免費方案常見：先 GET 喚醒
-                await fetch(`${API_BASE}/healthz`, { method: "GET", cache: "no-store" });
+                const raw = await fetchSoilmove();
+                const data = shapeForMap(raw);
 
-                const r = await fetch(`${API_BASE}/api/update`, { cache: "no-store" });
-                if (!r.ok) throw new Error(`API error: ${r.status}`);
-                const d = await r.json();
+                const payload = {
+                    updated: nowTaipeiString(),
+                    count: data.length,
+                    data
+                };
 
                 // 更新畫面
-                document.getElementById("time").textContent = d.updated || "";
-                document.getElementById("count").textContent = (d.count ?? (d.data?.length ?? 0));
-                render(d.data || []);
+                const timeEl = document.getElementById("time");
+                const countEl = document.getElementById("count");
+                if (timeEl) timeEl.innerText = payload.updated;
+                if (countEl) countEl.innerText = payload.count;
+
+                // 交給你原本的 render(data)
+                // render 內部會處理 showSuspended / marker icon / popup 等
+                if (typeof render === "function") render(payload.data);
+
+                // 存 localStorage
+                saveCache(payload);
+
+                // 顯示 info card
                 setInfoCardVisible(true);
 
-                // 下載按鈕指向後端
-                const excelBtn = document.getElementById("btnExcel");
-                const kmlBtn = document.getElementById("btnKml");
-                if (excelBtn && d.excel_url) excelBtn.href = `${API_BASE}${d.excel_url}`;
-                if (kmlBtn && d.kml_url) kmlBtn.href = `${API_BASE}${d.kml_url}`;
+                alert(`更新完成，共 ${payload.count} 筆資料`);
+            } catch (err) {
+                console.error(err);
 
-                // 存快取
-                await idbSet("soilmove_latest", {
-                    updated: d.updated,
-                    count: d.count,
-                    data: d.data || [],
-                    excel_url: d.excel_url || "",
-                    kml_url: d.kml_url || ""
-                });
-
-                alert(`更新完成，共 ${d.count} 筆資料（已暫存於本機瀏覽器）`);
-            } catch (e) {
-                console.error(e);
-                alert("更新失敗，請稍後再試（可能是 Render 還在喚醒或來源站異常）");
-                // 不清快取，讓舊資料可用
+                // 若抓不到，嘗試用快取救場
+                const cached = loadCache();
+                if (cached && cached.data && cached.data.length) {
+                    const timeEl = document.getElementById("time");
+                    const countEl = document.getElementById("count");
+                    if (timeEl) timeEl.innerText = `${cached.updated}（快取）`;
+                    if (countEl) countEl.innerText = cached.count;
+                    if (typeof render === "function") render(cached.data);
+                    setInfoCardVisible(true);
+                    alert("⚠️ 無法取得最新資料，已改用本機快取顯示。");
+                } else {
+                    alert("❌ 更新失敗：可能是 soilmove 未開放跨網域（CORS）或暫時阻擋。\n請查看 Console。");
+                }
             } finally {
                 setBtnLoading(btn, "⏳ 更新中...", "🔄 更新資料", false);
             }
         }
 
         // =========================
-        // 10) 開頁：先載入快取（秒顯示）
+        // 6) 網頁載入時：先載快取（不用每次都打）
         // =========================
-        async function loadCacheOnStart() {
-            try {
-                const cached = await idbGet("soilmove_latest");
-                if (!cached) return;
-
-                document.getElementById("time").textContent = cached.updated || "";
-                document.getElementById("count").textContent = (cached.count ?? (cached.data?.length ?? 0));
-                render(cached.data || []);
-                setInfoCardVisible(true);
-
-                // 快取也順便恢復下載按鈕連結（如果曾更新過）
-                const excelBtn = document.getElementById("btnExcel");
-                const kmlBtn = document.getElementById("btnKml");
-                if (excelBtn && cached.excel_url) excelBtn.href = `${API_BASE}${cached.excel_url}`;
-                if (kmlBtn && cached.kml_url) kmlBtn.href = `${API_BASE}${cached.kml_url}`;
-            } catch (e) {
-                console.warn("loadCacheOnStart failed:", e);
-            }
-        }
-
         document.addEventListener("DOMContentLoaded", () => {
-            loadCacheOnStart();
-        });
+            const cached = loadCache();
+            if (cached && cached.data && cached.data.length) {
+                const timeEl = document.getElementById("time");
+                const countEl = document.getElementById("count");
+                if (timeEl) timeEl.innerText = `${cached.updated}（快取）`;
+                if (countEl) countEl.innerText = cached.count;
 
-        // =========================
-        // 11) KML 上傳顯示範圍（避免歪掉：偵測公尺座標→轉換）
-        // =========================
-        let kmlLayer = null;
-
-        document.getElementById("kmlUpload").addEventListener("change", function (e) {
-            const file = e.target.files[0];
-            if (!file) return;
-
-            if (!file.name.toLowerCase().endsWith(".kml")) {
-                alert("請上傳 KML 檔案");
-                return;
+                if (typeof render === "function") render(cached.data);
+                setInfoCardVisible(true);
+            } else {
+                // 沒快取就先隱藏資訊卡
+                setInfoCardVisible(false);
             }
-
-            const reader = new FileReader();
-            reader.onload = function (event) {
-                try {
-                    const kmlText = event.target.result;
-
-                    // KML -> XML
-                    const parser = new DOMParser();
-                    const kmlDom = parser.parseFromString(kmlText, "text/xml");
-
-                    // XML -> GeoJSON（UMD: toGeoJSON）
-                    if (typeof toGeoJSON === "undefined") {
-                        alert("缺少 toGeoJSON 套件，請確認已載入");
-                        return;
-                    }
-
-                    let geojson = toGeoJSON.kml(kmlDom);
-                    if (!geojson || !geojson.features || geojson.features.length === 0) {
-                        alert("KML 中沒有可顯示的圖形");
-                        return;
-                    }
-
-                    // 偵測是否像公尺座標（超過經緯度範圍）
-                    const first = geojson.features?.[0]?.geometry?.coordinates;
-                    const flat = Array.isArray(first) ? first.flat(Infinity) : [];
-                    const sample = (flat.length >= 2) ? [flat[0], flat[1]] : null;
-
-                    if (sample && typeof sample[0] === "number") {
-                        const x = sample[0], y = sample[1];
-                        // 經緯度正常範圍大致 |lng|<=180, |lat|<=90
-                        // 若超出，視為投影座標（多半是 3826 公尺）
-                        if (Math.abs(x) > 180 || Math.abs(y) > 90) {
-                            geojson = transformGeoJSON_3826_to_4326(geojson);
-                        }
-                    }
-
-                    // 清掉舊圖層
-                    if (kmlLayer) map.removeLayer(kmlLayer);
-
-                    // 顯示 GeoJSON
-                    kmlLayer = L.geoJSON(geojson, {
-                        style: f => {
-                            const t = f?.geometry?.type || "";
-                            if (t.includes("Line")) {
-                                return { color: "#ff0000", weight: 5, opacity: 1 };
-                            }
-                            return { color: "#ff0000", weight: 2, fillColor: "#ff0000", fillOpacity: 0.12 };
-                        }
-                    }).addTo(map);
-
-                    // 縮放到範圍
-                    map.fitBounds(kmlLayer.getBounds(), { padding: [20, 20] });
-                } catch (err) {
-                    console.error(err);
-                    alert("KML 解析失敗，請確認檔案內容正確");
-                } finally {
-                    // 允許重複上傳同檔
-                    e.target.value = "";
-                }
-            };
-
-            reader.readAsText(file, "UTF-8");
         });
+
+        // 把 update 掛到全域，讓你的 <a onclick="update()"> 可用
+        window.update = update;
     </script>
+
 </body>
 
 </html>
