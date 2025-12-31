@@ -2,7 +2,7 @@ import os
 from flask import Flask, render_template, jsonify, send_file
 from flask_cors import CORS
 
-from services.soilmove import update_all, EXCEL_PATH, KML_PATH
+from soilmove import update_all, EXCEL_PATH, KML_PATH
 
 app = Flask(__name__)
 CORS(app)  # ✅ 允許跨網域（GitHub Pages / 其他前端網域呼叫 API）
