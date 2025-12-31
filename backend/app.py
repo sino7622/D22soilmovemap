@@ -30,11 +30,6 @@ def index():
         }), 500
     return send_from_directory(FRONTEND_DIR, "index.html")
 
-@app.route("/api/update")
-def api_update():
-    global latest
-    latest = update_all()
-    return jsonify(latest)
 
 @app.route("/api/data")
 def api_data():
