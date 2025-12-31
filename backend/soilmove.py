@@ -7,30 +7,23 @@ import simplekml
 import urllib3
 from urllib3.exceptions import InsecureRequestWarning
 
-# 停用不安全請求警告（你現在的寫法是正確的）
+# 停用不安全請求警告
 urllib3.disable_warnings(InsecureRequestWarning)
 
 # ====== Render / Linux 友善：固定輸出到 /tmp ======
 OUT_DIR = os.getenv("SOILMOVE_OUT_DIR", "/tmp/soilmove")
 os.makedirs(OUT_DIR, exist_ok=True)
 
-# 讓 app.py 的 download 路由可以抓到「最新版」檔案
 EXCEL_PATH = os.path.join(OUT_DIR, "全台土資場清單_latest.xlsx")
 KML_PATH = os.path.join(OUT_DIR, "全台土資場分佈圖_latest.kml")
 
 
 def _now_str():
-    # 台灣時間顯示（Render 是 UTC；你若要 +8，可在這裡調）
-    # 先用伺服器時間，避免引入額外套件
+    # 若 Render 有設 TZ=Asia/Taipei，這裡就會是台灣時間
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _normalize_coords(row) -> pd.Series:
-    """
-    soilmove 來源資料 x/y 可能反轉：
-    - 目標：lng(118~125), lat(20~26)
-    - x/y 來源格式可能是字串/None
-    """
     try:
         v1 = float(row.get("x") or 0)
         v2 = float(row.get("y") or 0)
@@ -43,7 +36,7 @@ def _normalize_coords(row) -> pd.Series:
         if 118 < v2 < 125 and 20 < v1 < 26:
             return pd.Series([v2, v1, "已自動修正(X/Y反轉)"])
 
-        # 只判斷經度範圍（若緯度不合理，仍標為異常）
+        # 只判斷經度範圍（緯度不合理）
         if 118 < v1 < 125:
             return pd.Series([v1, v2, "座標疑似異常(緯度不合理)"])
         if 118 < v2 < 125:
@@ -55,32 +48,47 @@ def _normalize_coords(row) -> pd.Series:
 
 
 def update_all() -> dict:
-    """
-    抓取全台土資場資料 → 清洗 → 產 Excel / KML → 回傳前端可用 JSON
-    回傳格式需對齊 app.py：{"updated","count","data","excel_url","kml_url"}
-    """
     url = "https://www.soilmove.tw/soilmove/dumpsiteGisQueryList"
     base_url = "https://www.soilmove.tw/soilmove/dumpsiteGisQuery"
 
     headers = {
         "Accept": "application/json, text/javascript, */*; q=0.01",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
         "X-Requested-With": "XMLHttpRequest",
         "Referer": base_url,
     }
 
     session = requests.Session()
 
-    # 1) 先 GET 一次，讓對方站點 session 正常
-    session.get(base_url, headers=headers, timeout=20, verify=False)
+    try:
+        # 1) 先 GET 一次（讓 session 正常）
+        session.get(base_url, headers=headers, timeout=20, verify=False, allow_redirects=True)
 
-    # 2) POST 拿資料
-    r = session.post(url, headers=headers, data={"city": ""}, timeout=30, verify=False)
-    r.raise_for_status()
-    data = r.json()
+        # 2) POST 拿資料
+        r = session.post(url, headers=headers, data={"city": ""}, timeout=30, verify=False, allow_redirects=True)
+        r.raise_for_status()
+
+        try:
+            data = r.json()
+        except Exception:
+            # 有時候對方回 HTML/非 JSON
+            data = []
+
+    except Exception:
+        # 任何抓取錯誤：回空結果（前端不會掛）
+        return {
+            "updated": _now_str(),
+            "count": 0,
+            "data": [],
+            "excel_url": "/download/excel",
+            "kml_url": "/download/kml",
+        }
 
     if not data:
-        # 不要丟例外，回空結果讓前端可顯示
         return {
             "updated": _now_str(),
             "count": 0,
@@ -115,20 +123,18 @@ def update_all() -> dict:
     keep_cols = [c for c in column_mapping.keys() if c in df.columns]
     df_excel = df[keep_cols].rename(columns=column_mapping)
 
-    # 覆蓋寫入 latest
-    df_excel.to_excel(EXCEL_PATH, index=False)
+    # 覆蓋寫入 latest（指定 engine 更穩）
+    df_excel.to_excel(EXCEL_PATH, index=False, engine="openpyxl")
 
     # 5) KML（覆蓋寫入 latest）
     kml = simplekml.Kml()
     style = simplekml.Style()
     style.iconstyle.icon.href = "http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png"
 
-    count = 0
     for _, row in df.iterrows():
         lng = float(row.get("lng") or 0)
         lat = float(row.get("lat") or 0)
 
-        # 過濾台灣有效座標
         if not (118 < lng < 125 and 20 < lat < 26):
             continue
 
@@ -151,12 +157,10 @@ def update_all() -> dict:
 
         pnt.description = description
         pnt.style = style
-        count += 1
 
     kml.save(KML_PATH)
 
-    # 6) 回傳給前端的資料（直接用原欄位 + lng/lat）
-    #    注意：確保是乾淨的 Python 型別（避免 numpy type 造成 jsonify 問題）
+    # 6) 回傳前端資料（保持你原版欄位）
     out_cols = [
         "dumpname", "city", "typename", "controlId", "applydate",
         "remain", "maxbury", "area", "lng", "lat"
@@ -164,8 +168,12 @@ def update_all() -> dict:
     out_cols = [c for c in out_cols if c in df.columns]
     df_out = df[out_cols].copy()
 
-    # 只回傳有效座標（前端就不用再過濾）
+    # 只回傳有效座標
     df_out = df_out[(df_out["lng"] > 0) & (df_out["lat"] > 0)]
+
+    # ✅ NaN → 空字串，避免前端出現 nan / JSON 非標準
+    df_out = df_out.where(pd.notnull(df_out), "")
+
     payload = df_out.to_dict(orient="records")
 
     return {
